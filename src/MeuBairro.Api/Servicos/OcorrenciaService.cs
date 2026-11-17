@@ -651,12 +651,16 @@ public static class Ordenacao
         IOrderedQueryable<Solicitacao>? ordenada = null;
         foreach (var (campo, decrescente) in ordens)
         {
+            // Status e prioridade seguem a ordem do negócio (ABERTA → EM_ANALISE → RESOLVIDA; BAIXA → MEDIA → ALTA),
+            // e não a dos códigos CHAR(1) gravados: com os padrões, ALTA = "A" viria antes de BAIXA = "B".
             ordenada = campo switch
             {
                 "id" => Ordenar(consulta, ordenada, s => s.Id, decrescente),
                 "titulo" => Ordenar(consulta, ordenada, s => s.Titulo, decrescente),
-                "status" => Ordenar(consulta, ordenada, s => s.Status, decrescente),
-                "prioridade" => Ordenar(consulta, ordenada, s => s.Prioridade, decrescente),
+                "status" => Ordenar(consulta, ordenada,
+                    s => s.Status == StatusSolicitacao.ABERTA ? 0 : s.Status == StatusSolicitacao.EM_ANALISE ? 1 : 2, decrescente),
+                "prioridade" => Ordenar(consulta, ordenada,
+                    s => s.Prioridade == Prioridade.BAIXA ? 0 : s.Prioridade == Prioridade.MEDIA ? 1 : 2, decrescente),
                 "conclusao" => Ordenar(consulta, ordenada, s => s.DataConclusao, decrescente),
                 _ => Ordenar(consulta, ordenada, s => s.DataAbertura, decrescente)
             };

@@ -159,6 +159,23 @@ public sealed class SegurancaComplementarTests(ApiFactory api) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Login_com_senha_acima_de_72_bytes_que_comeca_pela_senha_real_e_recusado()
+    {
+        // 36 caracteres e 72 bytes: o máximo aceito no cadastro. O BCrypt compara só esses 72 bytes.
+        var senha = new string('ç', 36);
+        var email = $"limite72.{Guid.NewGuid():N}@teste.com";
+        using var cliente = api.Cliente();
+        Assert.Equal(201, (await cliente.PostAsJsonAsync("/auth/register", new { nome = "Limite", email, senha })).Codigo());
+
+        var exata = await cliente.PostAsJsonAsync("/auth/login", new { email, senha });
+        var comSufixo = await cliente.PostAsJsonAsync("/auth/login", new { email, senha = senha + "qualquer-sufixo" });
+
+        Assert.Equal(200, exata.Codigo());
+        Assert.Equal(401, comSufixo.Codigo());
+        Assert.Equal("E-mail ou senha inválidos", (await comSufixo.ErroAsync()).Message);
+    }
+
+    [Fact]
     public async Task Avaliacao_so_e_visivel_para_o_dono_e_para_gestores()
     {
         var dono = await api.NovoCidadaoAsync();

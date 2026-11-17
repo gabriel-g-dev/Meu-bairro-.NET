@@ -288,6 +288,19 @@ public sealed class SegurancaUnitariaTests
     }
 
     [Fact]
+    public void Senha_acima_de_72_bytes_nunca_confere_mesmo_comecando_pela_senha_correta()
+    {
+        var senhas = Senhas();
+        var senha = new string('ç', 36); // 36 caracteres e 72 bytes em UTF-8, o máximo aceito no cadastro
+        var hash = senhas.Gerar(senha);
+
+        Assert.True(senhas.Verificar(senha, hash));
+        // Sozinho, o BCrypt aceitaria qualquer sufixo depois dos 72 bytes.
+        Assert.True(BCrypt.Net.BCrypt.Verify(senha + "sufixo", hash));
+        Assert.False(senhas.Verificar(senha + "sufixo", hash));
+    }
+
+    [Fact]
     public void Token_gerado_tem_perfil_emissor_audiencia_e_expiracao()
     {
         var gerado = Tokens(Infra.ApiFactory.SegredoJwt).Gerar(7, "Ana", "ana@teste.com", Perfil.GESTOR);
@@ -408,5 +421,33 @@ public sealed class HashRequisicaoTests
         Assert.Equal("{\"nota\":5}", corpo);
         Assert.NotEqual(hash, outro);
         Assert.Equal(64, hash.Length);
+    }
+
+    [Fact]
+    public async Task Multipart_incompleto_vira_400_e_corpo_acima_do_limite_do_servidor_mantem_o_413()
+    {
+        static Task<string> HashComFalha(Exception falha)
+        {
+            var contexto = new DefaultHttpContext();
+            contexto.Request.ContentType = "multipart/form-data; boundary=X";
+            contexto.Request.Body = new CorpoComFalha(falha);
+            return HashRequisicao.CalcularAsync(contexto.Request, CancellationToken.None);
+        }
+
+        var incompleto = await Assert.ThrowsAsync<RequisicaoInvalidaException>(() =>
+            HashComFalha(new IOException("Unexpected end of Stream")));
+        // BadHttpRequestException também é uma IOException, mas carrega o status certo (ex.: 413 do Kestrel).
+        var grande = await Assert.ThrowsAsync<BadHttpRequestException>(() =>
+            HashComFalha(new BadHttpRequestException("Request body too large.", StatusCodes.Status413PayloadTooLarge)));
+
+        Assert.Equal(400, incompleto.Status);
+        Assert.Equal(413, grande.StatusCode);
+    }
+
+    private sealed class CorpoComFalha(Exception falha) : MemoryStream
+    {
+        public override int Read(byte[] buffer, int offset, int count) => throw falha;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => throw falha;
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) => throw falha;
     }
 }

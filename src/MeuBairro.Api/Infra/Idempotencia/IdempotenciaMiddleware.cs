@@ -10,7 +10,6 @@ using MeuBairro.Api.Servicos;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Primitives;
 
 namespace MeuBairro.Api.Infra.Idempotencia;
 
@@ -24,8 +23,7 @@ public sealed partial class IdempotenciaMiddleware(RequestDelegate next, ILogger
     public async Task InvokeAsync(HttpContext http, IdempotenciaService servico, IOptions<IdempotenciaOptions> opcoes)
     {
         if (http.GetEndpoint()?.Metadata.GetMetadata<IdempotenteMetadata>() is null
-            || !http.Request.Headers.TryGetValue(Cabecalho, out var valores)
-            || StringValues.IsNullOrEmpty(valores))
+            || !http.Request.Headers.TryGetValue(Cabecalho, out var valores))
         {
             await next(http);
             return;
@@ -35,7 +33,8 @@ public sealed partial class IdempotenciaMiddleware(RequestDelegate next, ILogger
         if (valores.Count > 1)
             throw new RequisicaoInvalidaException("Envie apenas um cabeçalho Idempotency-Key");
 
-        var chave = valores[0]!.Trim();
+        // Cabeçalho enviado vazio também é recusado: ignorá-lo deixaria a operação sem proteção contra repetição.
+        var chave = valores.ToString().Trim();
         if (chave.Length == 0 || chave.Length > cfg.TamanhoMaximoChave || !ChaveValida().IsMatch(chave))
             throw new RequisicaoInvalidaException(
                 $"O cabeçalho Idempotency-Key deve ter de 1 a {cfg.TamanhoMaximoChave} caracteres visíveis, sem espaços");
@@ -64,7 +63,7 @@ public sealed partial class IdempotenciaMiddleware(RequestDelegate next, ILogger
         var db = http.RequestServices.GetRequiredService<AppDbContext>();
         var arquivos = http.RequestServices.GetRequiredService<ArquivosDaRequisicao>();
         await using var transacao = servico.ConclusaoAtomica
-            ? await db.Database.BeginTransactionAsync(http.RequestAborted)
+            ? await AbrirTransacaoAsync(db, servico, inicio, http.RequestAborted)
             : null;
 
         var corpoOriginal = http.Response.Body;
@@ -140,6 +139,21 @@ public sealed partial class IdempotenciaMiddleware(RequestDelegate next, ILogger
 
     private sealed class ChavePerdidaException : Exception;
 
+    // Se a transação nem chega a abrir, nada do negócio foi executado: a chave é liberada para uma nova tentativa.
+    private async Task<IDbContextTransaction> AbrirTransacaoAsync(AppDbContext db, IdempotenciaService servico,
+        InicioIdempotencia inicio, CancellationToken ct)
+    {
+        try
+        {
+            return await db.Database.BeginTransactionAsync(ct);
+        }
+        catch
+        {
+            await DescartarAsync(servico, inicio);
+            throw;
+        }
+    }
+
     private async Task DesfazerAsync(IDbContextTransaction transacao, ArquivosDaRequisicao arquivos)
     {
         try
@@ -202,7 +216,18 @@ public static class HashRequisicao
 
         if (request.HasFormContentType)
         {
-            var form = await request.ReadFormAsync(ct);
+            IFormCollection form;
+            try
+            {
+                form = await request.ReadFormAsync(ct);
+            }
+            catch (IOException ex) when (ex is not BadHttpRequestException)
+            {
+                // Multipart incompleto (ex.: sem o delimitador final). O binding de formulários também responde 400.
+                // BadHttpRequestException (também uma IOException) segue adiante com o próprio status, como o 413.
+                throw new RequisicaoInvalidaException(Erros.MensagemFormularioInvalido);
+            }
+
             foreach (var chave in form.Keys.OrderBy(k => k, StringComparer.Ordinal))
                 Adicionar(hash, $"campo:{chave}={string.Join('\u001f', form[chave].ToArray())}\n");
 

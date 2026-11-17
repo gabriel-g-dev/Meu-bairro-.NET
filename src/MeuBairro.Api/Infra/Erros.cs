@@ -18,6 +18,7 @@ public static partial class Erros
     public const string MensagemBancoIndisponivel = "Banco de dados indisponível no momento. Tente novamente mais tarde.";
     public const string MensagemErroInterno = "Erro interno no servidor. Tente novamente mais tarde.";
     public const string MensagemCorpoInvalido = "O corpo da requisição está ausente ou não é um JSON válido";
+    public const string MensagemFormularioInvalido = "Não foi possível ler os dados do formulário multipart";
 
     public static Task EscreverAsync(HttpContext http, int status, string mensagem, IReadOnlyList<CampoErro>? campos = null)
     {
@@ -88,7 +89,7 @@ public static partial class Erros
     private static (int, string, IReadOnlyList<CampoErro>?) MapearFormulario(InvalidDataException ex) =>
         ex.Message.Contains("limit", StringComparison.OrdinalIgnoreCase)
             ? (413, MensagemTamanhoExcedido, null)
-            : (400, "Não foi possível ler os dados do formulário multipart", null);
+            : (400, MensagemFormularioInvalido, null);
 
     private static string MensagemBinding(BadHttpRequestException ex)
     {

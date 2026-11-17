@@ -400,6 +400,32 @@ public sealed class OcorrenciaTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(desc.Conteudo.Select(o => o.Id).OrderDescending(), desc.Conteudo.Select(o => o.Id));
     }
 
+    [Fact]
+    public async Task Ordenacao_por_prioridade_segue_a_importancia_e_nao_o_codigo_gravado()
+    {
+        var cidadao = await api.NovoCidadaoAsync();
+        var gestor = await api.NovoGestorAsync();
+        var bairro = $"Prioridades {Guid.NewGuid().ToString("N")[..6]}";
+        var extras = new Dictionary<string, string> { ["bairro"] = bairro };
+        var baixa = await cidadao.CriarOcorrenciaAsync(extras: extras);
+        var media = await cidadao.CriarOcorrenciaAsync(extras: extras);
+        var alta = await cidadao.CriarOcorrenciaAsync(extras: extras);
+        using (var clienteGestor = gestor.Cliente())
+        {
+            Assert.Equal(200, (await clienteGestor.PatchAsJsonAsync($"/ocorrencias/{baixa.Id}/prioridade", new { prioridade = "BAIXA" })).Codigo());
+            Assert.Equal(200, (await clienteGestor.PatchAsJsonAsync($"/ocorrencias/{alta.Id}/prioridade", new { prioridade = "ALTA" })).Codigo());
+        }
+        using var cliente = cidadao.Cliente();
+
+        async Task<List<long>> Ordenar(string sort) =>
+            (await (await cliente.GetAsync($"/ocorrencias/paginado?bairro={Uri.EscapeDataString(bairro)}&sort={sort}"))
+                .LerAsync<PaginaResponse<OcorrenciaResponse>>()).Conteudo.Select(o => o.Id).ToList();
+
+        // Os códigos gravados em CHAR(1) (A = ALTA, B = BAIXA, M = MEDIA) não seguem a ordem de importância.
+        Assert.Equal([alta.Id, media.Id, baixa.Id], await Ordenar("prioridade,desc"));
+        Assert.Equal([baixa.Id, media.Id, alta.Id], await Ordenar("prioridade,asc"));
+    }
+
     [Theory]
     [InlineData("status=INEXISTENTE")]
     [InlineData("prioridade=URGENTE")]
@@ -517,5 +543,34 @@ public sealed class OcorrenciaTests(ApiFactory api) : IClassFixture<ApiFactory>
         Assert.Equal(resumo.Total, resumo.Abertas + resumo.EmAnalise + resumo.Resolvidas);
         Assert.Equal(resumo.Total, resumo.PrioridadeAlta + resumo.PrioridadeMedia + resumo.PrioridadeBaixa);
         Assert.True(resumo.Total >= 1);
+    }
+}
+
+// Os códigos CHAR(1) do Oracle são configuráveis (Banco:Codigos), então a ordenação não pode depender deles.
+public sealed class OrdenacaoComCodigosConfiguradosTests
+{
+    [Fact]
+    public async Task Ordenacao_por_status_segue_o_ciclo_da_ocorrencia_com_qualquer_codigo()
+    {
+        await using var api = new FabricaComConfiguracao(
+            ("Banco:Codigos:Status:ABERTA", "P"), ("Banco:Codigos:Status:EM_ANALISE", "A"), ("Banco:Codigos:Status:RESOLVIDA", "C"));
+        var cidadao = await api.NovoCidadaoAsync();
+        var gestor = await api.NovoGestorAsync();
+        var aberta = await cidadao.CriarOcorrenciaAsync();
+        var emAnalise = await cidadao.CriarOcorrenciaAsync();
+        var resolvida = await cidadao.CriarOcorrenciaAsync();
+        Assert.Equal(200, (await gestor.AlterarStatusAsync(emAnalise.Id, "EM_ANALISE")).Codigo());
+        await gestor.ResolverAsync(resolvida.Id);
+        using var cliente = cidadao.Cliente();
+
+        async Task<List<long>> Ordenar(string sort) =>
+            (await (await cliente.GetAsync($"/ocorrencias/paginado?minhas=true&sort={sort}"))
+                .LerAsync<PaginaResponse<OcorrenciaResponse>>()).Conteudo.Select(o => o.Id).ToList();
+
+        Assert.Equal("C", await api.NoBancoAsync(db => db.Database
+            .SqlQueryRaw<string>("SELECT SOLICITACAO_STATUS AS \"Value\" FROM SOLICITACOES WHERE SOLICITACAO_ID = {0}", resolvida.Id)
+            .SingleAsync()));
+        Assert.Equal([aberta.Id, emAnalise.Id, resolvida.Id], await Ordenar("status,asc"));
+        Assert.Equal([resolvida.Id, emAnalise.Id, aberta.Id], await Ordenar("status,desc"));
     }
 }

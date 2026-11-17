@@ -320,6 +320,27 @@ public sealed class AutenticacaoTests(ApiFactory api) : IClassFixture<ApiFactory
     }
 
     [Fact]
+    public async Task Rota_publica_com_metodo_ou_tipo_de_conteudo_errado_responde_o_erro_real_e_nao_401()
+    {
+        using var cliente = api.Cliente();
+
+        // Ex.: corpo "raw → Text" no Postman, que envia text/plain.
+        var textoPuro = await cliente.PostAsync("/auth/login",
+            new StringContent("{\"email\":\"a@teste.com\",\"senha\":\"Senha@123\"}", System.Text.Encoding.UTF8, "text/plain"));
+        var metodo = await cliente.GetAsync("/auth/login");
+        var inexistente = await cliente.GetAsync("/rota/que/nao/existe");
+
+        Assert.Equal(415, textoPuro.Codigo());
+        Assert.Equal("Tipo de conteúdo não suportado nesta rota", (await textoPuro.ErroAsync()).Message);
+        Assert.Equal(405, metodo.Codigo());
+        Assert.Equal("Método HTTP não suportado nesta rota", (await metodo.ErroAsync()).Message);
+        Assert.Equal(404, inexistente.Codigo());
+        // As rotas mapeadas continuam exigindo token.
+        Assert.Equal(401, (await cliente.GetAsync("/ocorrencias")).Codigo());
+        Assert.Equal(401, (await cliente.PostAsync("/ocorrencias", Dados.Ocorrencia())).Codigo());
+    }
+
+    [Fact]
     public async Task Cabecalho_authorization_de_outro_esquema_nao_autentica()
     {
         var conta = await api.NovoCidadaoAsync();

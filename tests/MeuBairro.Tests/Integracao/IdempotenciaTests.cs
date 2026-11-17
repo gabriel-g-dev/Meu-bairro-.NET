@@ -1,8 +1,12 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using MeuBairro.Api.Contratos;
 using MeuBairro.Api.Dados;
 using MeuBairro.Tests.Infra;
 using MeuBairro.Api.Infra.Idempotencia;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -246,6 +250,86 @@ public sealed class IdempotenciaTests(FabricaComFalhas api) : IClassFixture<Fabr
 
         Assert.Equal(a.Id, b.Id);
         Assert.Equal(1, await api.NoBancoAsync(db => db.Categorias.CountAsync(c => c.Nome == nome)));
+    }
+
+    [Fact]
+    public async Task Falha_ao_abrir_a_transacao_libera_a_chave_para_nova_tentativa()
+    {
+        var cidadao = await api.NovoCidadaoAsync();
+        using var cliente = cidadao.Cliente();
+        var chave = Chave();
+        var titulo = Dados.TituloUnico();
+
+        api.FalhaTransacao.Ativa = true;
+        HttpResponseMessage falha;
+        try
+        {
+            falha = await cliente.SendAsync(Dados.Post("/ocorrencias", Dados.Ocorrencia(titulo)).ComChave(chave));
+        }
+        finally
+        {
+            api.FalhaTransacao.Ativa = false;
+        }
+
+        Assert.Equal(503, falha.Codigo());
+        Assert.Equal(0, await ContarChavesAsync(chave));
+        // Sem a correção, a chave ficava "em processamento" e a nova tentativa recebia 409 durante o bloqueio.
+        var novaTentativa = await cliente.SendAsync(Dados.Post("/ocorrencias", Dados.Ocorrencia(titulo)).ComChave(chave));
+        await novaTentativa.AssertStatusAsync(201);
+        Assert.Equal(1, await api.ContarSolicitacoesAsync(cidadao.Id));
+    }
+
+    [Fact]
+    public async Task Multipart_incompleto_com_chave_retorna_400_sem_guardar_a_chave()
+    {
+        var cidadao = await api.NovoCidadaoAsync();
+        using var cliente = cidadao.Cliente();
+        var chave = Chave();
+        // Termina antes do delimitador final, como num envio interrompido.
+        var corpo = new ByteArrayContent(Encoding.UTF8.GetBytes(
+            "--LIMITE\r\nContent-Disposition: form-data; name=\"titulo\"\r\n\r\nBuraco grande na rua\r\n"
+            + "--LIMITE\r\nContent-Disposition: form-data; name=\"descricao\"\r\n\r\nDescrição sem fim"));
+        corpo.Headers.ContentType = MediaTypeHeaderValue.Parse("multipart/form-data; boundary=LIMITE");
+
+        var resposta = await cliente.SendAsync(Dados.Post("/ocorrencias", corpo).ComChave(chave));
+
+        await resposta.AssertStatusAsync(400);
+        Assert.Equal("Não foi possível ler os dados do formulário multipart", (await resposta.ErroAsync()).Message);
+        Assert.Equal(0, await ContarChavesAsync(chave));
+        Assert.Equal(0, await api.ContarSolicitacoesAsync(cidadao.Id));
+    }
+
+    [Fact]
+    public async Task Chave_vazia_retorna_400_em_vez_de_desligar_a_protecao()
+    {
+        var cidadao = await api.NovoCidadaoAsync();
+        var gestor = await api.NovoGestorAsync();
+        var criada = await cidadao.CriarOcorrenciaAsync();
+
+        // Direto no TestServer: pelo HttpClient o cabeçalho vazio é descartado antes de chegar à API (o Kestrel o entrega).
+        Task<HttpContext> Andamento(string? chave) => api.Server.SendAsync(c =>
+        {
+            c.Request.Method = "POST";
+            c.Request.Path = $"/ocorrencias/{criada.Id}/andamentos";
+            c.Request.Headers.Authorization = $"Bearer {gestor.Token}";
+            if (chave is not null)
+                c.Request.Headers["Idempotency-Key"] = chave;
+            c.Request.ContentType = "application/json";
+            c.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{\"descricao\":\"Equipe enviada\"}"));
+            c.Features.Set<IHttpRequestBodyDetectionFeature>(new ComCorpo());
+        });
+
+        var vazia = await Andamento("");
+        var semCabecalho = await Andamento(null);
+
+        Assert.Equal(400, vazia.Response.StatusCode);
+        Assert.Equal(201, semCabecalho.Response.StatusCode);
+        Assert.Equal(1, await api.NoBancoAsync(db => db.Andamentos.CountAsync(a => a.SolicitacaoId == criada.Id)));
+    }
+
+    private sealed class ComCorpo : IHttpRequestBodyDetectionFeature
+    {
+        public bool CanHaveBody => true;
     }
 
     [Theory]

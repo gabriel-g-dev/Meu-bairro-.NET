@@ -139,4 +139,19 @@ public sealed class ConsultasOracleTests
         Assert.Contains("\"FUNCIONARIOS\"", historico);
         Assert.Contains("LOWER(\"s\".\"SOLICITACAO_TITULO\")", duplicada);
     }
+
+    [Fact]
+    public void Ordenacao_por_prioridade_e_status_e_traduzida_para_oracle_sem_ordenar_pelo_codigo_gravado()
+    {
+        using var db = ContextoOracle(capturar: false);
+
+        var sql = Ordenacao.Aplicar(db.Solicitacoes.AsNoTracking(), Ordenacao.Ler(["prioridade,desc", "status,asc"]))
+            .ToQueryString();
+        var ordem = sql[sql.IndexOf("ORDER BY", StringComparison.Ordinal)..];
+
+        // Prioridade e status entram como CASE (posição no negócio); só o desempate usa uma coluna direto.
+        Assert.StartsWith("ORDER BY CASE", ordem);
+        Assert.Equal(2, ordem.Split("CASE").Length - 1);
+        Assert.EndsWith("\"s\".\"SOLICITACAO_ID\"", ordem.Trim());
+    }
 }

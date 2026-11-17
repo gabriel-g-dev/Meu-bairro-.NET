@@ -54,12 +54,28 @@ public sealed class FalhaControlada : DbCommandInterceptor
     }
 }
 
+// Falha ao abrir a transação do banco principal (ex.: erro de disco), depois que a Idempotency-Key já foi registrada.
+public sealed class FalhaAoIniciarTransacao : DbTransactionInterceptor
+{
+    public volatile bool Ativa;
+
+    public override ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(DbConnection connection,
+        TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default) =>
+        Ativa && eventData.Context is AppDbContext
+            ? throw new SqliteException("falha simulada ao iniciar a transação", 10)
+            : ValueTask.FromResult(result);
+}
+
 public sealed class FabricaComFalhas : ApiFactory
 {
     public FalhaControlada Falhas { get; } = new();
+    public FalhaAoIniciarTransacao FalhaTransacao { get; } = new();
 
-    protected override void ConfigurarServicos(IServiceCollection services) =>
+    protected override void ConfigurarServicos(IServiceCollection services)
+    {
         services.AddSingleton<IInterceptor>(Falhas);
+        services.AddSingleton<IInterceptor>(FalhaTransacao);
+    }
 }
 
 public sealed class FabricaComRelogio : ApiFactory

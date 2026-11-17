@@ -47,10 +47,14 @@ public static class AutenticacaoExtensions
                 };
             });
 
-        // Toda rota exige token, exceto as marcadas com AllowAnonymous.
+        // Toda rota mapeada exige token, exceto as marcadas com AllowAnonymous. O que não chega a uma rota (caminho
+        // inexistente, ou método e Content-Type recusados pelo roteamento) não pede token: o cliente recebe o erro
+        // real (404, 405 ou 415), e não 401, inclusive no login e no cadastro.
         services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder(JwtBearerDefaults.AuthenticationScheme)
-                .RequireAuthenticatedUser().Build())
+                .RequireAssertion(c => c.User.Identity?.IsAuthenticated == true
+                                       || c.Resource is HttpContext http && http.GetEndpoint() is not RouteEndpoint)
+                .Build())
             .AddPolicy(Acesso.Cidadao, p => p.RequireAuthenticatedUser().RequireRole(nameof(Perfil.CIDADAO)))
             .AddPolicy(Acesso.Gestor, p => p.RequireAuthenticatedUser().RequireRole(nameof(Perfil.GESTOR)));
 

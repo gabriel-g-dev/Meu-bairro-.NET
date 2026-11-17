@@ -1,4 +1,6 @@
+using System.Text;
 using MeuBairro.Api.Configuracao;
+using MeuBairro.Api.Infra;
 using Microsoft.Extensions.Options;
 
 namespace MeuBairro.Api.Seguranca;
@@ -19,6 +21,14 @@ public sealed class SenhaService
     // Senhas guardadas em outro formato (ex.: texto puro) nunca são aceitas.
     public bool Verificar(string senha, string? hash)
     {
+        // O BCrypt só compara os primeiros 72 bytes: sem esta regra, a senha real seguida de qualquer sufixo também
+        // entraria. Uma senha que o cadastro recusaria nunca confere (o hash fictício mantém o tempo de resposta).
+        if (Encoding.UTF8.GetByteCount(senha) > SenhaValidaAttribute.MaximoBytes)
+        {
+            VerificarFicticio(senha);
+            return false;
+        }
+
         if (string.IsNullOrEmpty(hash) || !hash.StartsWith("$2", StringComparison.Ordinal))
             return false;
         try
