@@ -1,0 +1,30 @@
+# Build
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/settings.json
+
+# Testes e cobertura
+TestResults/
+coverage*/
+*.trx
+
+# Dados locais (bancos SQLite e fotos enviadas)
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Segredos e configurações locais
+.env
+appsettings.*.local.json
+*.local.json
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
